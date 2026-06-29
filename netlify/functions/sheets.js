@@ -1,6 +1,6 @@
 const SHEET_ID = process.env.SHEET_ID;
 
-const TABS = ['Tagged Notes', 'Untagged Notes', 'All Notes'];
+const TABS = ['Tagged Notes', 'Untagged Notes'];
 
 export async function handler(event) {
   if (event.httpMethod !== 'GET') {
