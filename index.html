@@ -902,18 +902,45 @@ function switchPioneerTab(tab) {
     xref.style.display = 'none'; explore.style.display = '';
     btnE.style.background = 'var(--gold)'; btnE.style.color = 'var(--navy)';
     btnX.style.background = 'rgba(255,255,255,0.12)'; btnX.style.color = 'rgba(255,255,255,0.7)';
-    renderExploreUnits();
+    explorePage = 0;
+    renderExploreUnits(0);
   }
 }
 
-function renderExploreUnits() {
+let explorePage = 0;
+const EXPLORE_PAGE_SIZE = 12;
+
+function renderExploreUnits(page = 0) {
+  explorePage = page;
   const el = document.getElementById('explore-units-list');
-  el.innerHTML = PIONEER_UNITS.map((u, i) => `
-    <div class="unit-card" onclick="openExploreUnit(${i})">
+  const total = PIONEER_UNITS.length;
+  const totalPages = Math.ceil(total / EXPLORE_PAGE_SIZE);
+  const start = page * EXPLORE_PAGE_SIZE;
+  const slice = PIONEER_UNITS.slice(start, start + EXPLORE_PAGE_SIZE);
+
+  const cards = slice.map((u, i) => `
+    <div class="unit-card" onclick="openExploreUnit(${start + i})">
       <p class="unit-number">Unit ${esc(u.id)}</p>
       <p class="unit-title">${esc(u.title)}</p>
       <p style="font-size:11px;color:var(--text3);margin-top:4px">${u.questions.length} question${u.questions.length !== 1 ? 's' : ''}</p>
     </div>`).join('');
+
+  const pagination = totalPages > 1 ? `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-top:8px;gap:8px">
+      <button class="note-action" style="flex:1;justify-content:center;padding:10px"
+        onclick="renderExploreUnits(${page - 1}); window.scrollTo(0,0)"
+        ${page === 0 ? 'disabled style="flex:1;justify-content:center;padding:10px;opacity:0.35;cursor:default"' : ''}>
+        ← Prev
+      </button>
+      <span style="font-size:12px;color:var(--text3);white-space:nowrap">Page ${page + 1} of ${totalPages}</span>
+      <button class="note-action" style="flex:1;justify-content:center;padding:10px"
+        onclick="renderExploreUnits(${page + 1}); window.scrollTo(0,0)"
+        ${page >= totalPages - 1 ? 'disabled style="flex:1;justify-content:center;padding:10px;opacity:0.35;cursor:default"' : ''}>
+        Next →
+      </button>
+    </div>` : '';
+
+  el.innerHTML = cards + pagination;
 }
 
 let currentExploreUnit = null;
