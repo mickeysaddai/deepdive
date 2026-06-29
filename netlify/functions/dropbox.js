@@ -12,7 +12,6 @@ export async function handler(event) {
   };
 
   try {
-    // Get a temporary download link from Dropbox
     const linkRes = await fetch('https://api.dropboxapi.com/2/files/get_temporary_link', {
       method: 'POST',
       headers: {
@@ -24,33 +23,18 @@ export async function handler(event) {
 
     if (!linkRes.ok) {
       const err = await linkRes.text();
-      console.error('Dropbox link error:', err);
-      return {
-        statusCode: 502,
-        headers,
-        body: JSON.stringify({ error: 'Could not access Pioneer book from Dropbox.' }),
-      };
+      console.error('Dropbox error:', err);
+      return { statusCode: 502, headers, body: JSON.stringify({ error: 'Could not access Pioneer book.' }) };
     }
 
     const linkData = await linkRes.json();
-    const tempLink = linkData.link;
-
-    // Return the temporary link — the client uses it to display/read the PDF
     return {
       statusCode: 200,
       headers,
-      body: JSON.stringify({
-        url: tempLink,
-        name: linkData.metadata?.name || 'Pioneer-School-Book.pdf',
-        size: linkData.metadata?.size,
-      }),
+      body: JSON.stringify({ url: linkData.link, name: linkData.metadata?.name }),
     };
   } catch (err) {
     console.error('Dropbox function error:', err);
-    return {
-      statusCode: 500,
-      headers,
-      body: JSON.stringify({ error: 'Could not connect to Dropbox.' }),
-    };
+    return { statusCode: 500, headers, body: JSON.stringify({ error: 'Could not connect to Dropbox.' }) };
   }
 }
