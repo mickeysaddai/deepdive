@@ -1,6 +1,18 @@
 const ANTHROPIC_KEY = process.env.ANTHROPIC_KEY;
 
 export async function handler(event) {
+  if (event.httpMethod === 'OPTIONS') {
+    return {
+      statusCode: 200,
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Content-Type',
+        'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      },
+      body: '',
+    };
+  }
+
   if (event.httpMethod !== 'POST') {
     return { statusCode: 405, body: 'Method not allowed' };
   }
@@ -11,17 +23,22 @@ export async function handler(event) {
   };
 
   try {
-    const { message, notes } = JSON.parse(event.body);
+    const body = JSON.parse(event.body || '{}');
+    const { message, notes } = body;
 
     if (!message) {
       return { statusCode: 400, headers, body: JSON.stringify({ error: 'Message is required' }) };
     }
 
+    if (!ANTHROPIC_KEY) {
+      return { statusCode: 500, headers, body: JSON.stringify({ error: 'API key not configured' }) };
+    }
+
     const notesContext = notes && notes.length > 0
       ? notes.map(n =>
-          `Tag: ${n.tag || ''} | Scripture: ${n.scripture || ''} | Title: ${n.title || ''} | Content: ${n.content || ''} | Source: ${n.source || ''}`
+          `[${n.tab || 'Notes'}] Tag: ${n.tag || 'none'} | Scripture: ${n.scripture || ''} | Title: ${n.title || ''} | Content: ${n.content || ''}`
         ).join('\n')
-      : 'No matching notes found in the database.';
+      : 'No matching notes found in the database for this query.';
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -33,25 +50,26 @@ export async function handler(event) {
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
         max_tokens: 1024,
-        system: `You are Deep Dive, Mickey's personal research and study assistant. You have access to Mickey's personal notes database which includes ministry notes, scriptures, illustrations, and study material.
+        system: `You are Deep Dive, Mickey's personal research and study assistant. Mickey uses this app to organize study notes, scriptures, illustrations, and ministry material.
 
-When answering questions:
-- Always cite exactly where information comes from (e.g. "Google Sheets - Tagged Notes, row 14" or "Evernote - Illustrations note")
-- Be warm, concise, and thoughtful
-- If multiple notes are relevant, organize them clearly
-- If nothing matches, say so honestly and suggest related tags Mickey could search for
-- Never make up information that isn't in the provided notes
+Your job is to search Mickey's notes and give clear, warm, well-organized answers. Always cite exactly where information comes from — for example "Tagged Notes — row 5" or "Untagged Notes". If multiple notes are relevant, organize them clearly with the most relevant first. If nothing matches, say so honestly and suggest what tags Mickey might search for.
 
-Mickey's relevant notes for this query:
+Never make up information. Only use what is in the provided notes.
+
+Mickey's notes relevant to this query:
 ${notesContext}`,
         messages: [{ role: 'user', content: message }],
       }),
     });
 
     if (!response.ok) {
-      const err = await response.text();
-      console.error('Anthropic error:', err);
-      return { statusCode: 502, headers, body: JSON.stringify({ error: 'AI service error. Please try again.' }) };
+      const errText = await response.text();
+      console.error('Anthropic API error:', response.status, errText);
+      return {
+        statusCode: 502,
+        headers,
+        body: JSON.stringify({ error: `AI service error (${response.status}). Please try again.` }),
+      };
     }
 
     const data = await response.json();
