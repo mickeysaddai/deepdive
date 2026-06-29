@@ -27,14 +27,16 @@ export async function handler(event) {
 
         const text = await res.text();
 
-        // Strip Google's JSONP wrapper: /*O_o*/\ngoogle.visualization.Query.setResponse({...});
-        const match = text.match(/google\.visualization\.Query\.setResponse\(([\s\S]*)\);?\s*$/);
-        if (!match) {
-          console.log(`Could not parse response for tab "${tabName}"`);
+        // Google wraps response in: /*O_o*/\ngoogle.visualization.Query.setResponse({...});
+        // Find the first { and last } to extract the JSON object
+        const start = text.indexOf('{');
+        const end = text.lastIndexOf('}');
+        if (start === -1 || end === -1) {
+          console.log(`Could not find JSON in response for tab "${tabName}"`);
           continue;
         }
 
-        const json = JSON.parse(match[1]);
+        const json = JSON.parse(text.slice(start, end + 1));
         if (!json?.table?.rows?.length) continue;
 
         const cols = json.table.cols.map(c => c.label || c.id || '');
@@ -45,7 +47,6 @@ export async function handler(event) {
           cols.forEach((col, i) => {
             if (col) obj[col] = row.c[i]?.v != null ? String(row.c[i].v).trim() : '';
           });
-          // Only keep rows with actual content beyond the tab name
           const hasContent = cols.some(col => col && obj[col] && obj[col].length > 0);
           if (hasContent) combined.push(obj);
         }
