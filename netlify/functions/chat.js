@@ -24,7 +24,7 @@ export async function handler(event) {
 
   try {
     const body = JSON.parse(event.body || '{}');
-    const { message, notes } = body;
+    const { message, notes, history = [] } = body;
 
     if (!message) {
       return { statusCode: 400, headers, body: JSON.stringify({ error: 'Message is required' }) };
@@ -38,7 +38,26 @@ export async function handler(event) {
       ? notes.map(n =>
           `[${n.tab || 'Notes'}] Tag: ${n.tag || 'none'} | Scripture: ${n.scripture || ''} | Title: ${n.title || ''} | Content: ${n.content || ''}`
         ).join('\n')
-      : 'No matching notes found in the database for this query.';
+      : null;
+
+    const systemPrompt = `You are Deep Dive, Mickey's personal Bible study and ministry assistant. Mickey is a Jehovah's Witness pioneer who uses this app to organize study notes, scriptures, illustrations, and ministry material.
+
+You are warm, knowledgeable, and conversational — like a trusted study partner. You can:
+- Answer follow-up questions and remember what was said earlier in the conversation
+- Discuss Bible topics, scriptures, and ministry from your own knowledge
+- Search Mickey's personal notes when they are relevant and cite them clearly
+- Have natural back-and-forth conversations, not just one-shot answers
+
+When Mickey's notes are provided and relevant, reference them specifically (e.g. "In your note tagged 'Trials'..." or "Your note on Isaiah 1:18 says..."). If no notes match, draw on your own knowledge of the Bible and Jehovah's Witness publications to give a helpful answer — don't just say nothing was found.
+
+Be concise but thorough. Use natural paragraph breaks. Do not use bullet points or headers unless the answer genuinely calls for a list.${notesContext ? `\n\nMickey's notes relevant to this message:\n${notesContext}` : ''}`;
+
+    // Build message history — exclude the current message (it's already the last in history)
+    // history arrives as [{role, content}...] including the current user message at the end
+    // We send all of it as the messages array
+    const messages = history.length > 0
+      ? history
+      : [{ role: 'user', content: message }];
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -50,15 +69,8 @@ export async function handler(event) {
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
         max_tokens: 1024,
-        system: `You are Deep Dive, Mickey's personal research and study assistant. Mickey uses this app to organize study notes, scriptures, illustrations, and ministry material.
-
-Your job is to search Mickey's notes and give clear, warm, well-organized answers. Always cite exactly where information comes from — for example "Tagged Notes — row 5" or "Untagged Notes". If multiple notes are relevant, organize them clearly with the most relevant first. If nothing matches, say so honestly and suggest what tags Mickey might search for.
-
-Never make up information. Only use what is in the provided notes.
-
-Mickey's notes relevant to this query:
-${notesContext}`,
-        messages: [{ role: 'user', content: message }],
+        system: systemPrompt,
+        messages,
       }),
     });
 
