@@ -577,7 +577,12 @@ body {
 
 <!-- CHAT -->
 <div class="screen" id="screen-chat">
-  <div class="top-bar"><h1>Ask anything</h1></div>
+  <div class="top-bar">
+    <h1>Ask anything</h1>
+    <button class="icon-btn" onclick="clearChat()" aria-label="Clear chat">
+      <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+    </button>
+  </div>
   <div class="chat-messages" id="chat-messages">
     <div class="bubble-them">Hi Mickey! Tap the mic and speak, or type below. I'll search your notes and read the answer back to you.</div>
   </div>
@@ -1073,6 +1078,8 @@ async function openUnit(i) {
 }
 
 // ── CHAT ──
+let chatHistory = []; // tracks full conversation for multi-turn memory
+
 async function sendChat(msgOverride) {
   const input = document.getElementById('chat-input');
   const msg = msgOverride || input.value.trim();
@@ -1080,12 +1087,16 @@ async function sendChat(msgOverride) {
   input.value = '';
 
   appendBubble(msg, 'me');
+  chatHistory.push({ role: 'user', content: msg });
   const typing = appendTyping();
 
   try {
     const notes = await fetchNotes();
-    // Use ranked search — same logic as theme search
-    const relevant = searchNotes(notes, msg.split(/\s+/).join(','), 25);
+
+    // Smarter keyword extraction — skip short/common words
+    const stopwords = new Set(['what','that','this','with','have','from','they','their','which','when','will','were','been','your','more','some','does','about','would','could','should','than','also','into','other','there','then','these','those','such','much','many','both','where','while','make','made','even','just','like','very','well','only','most','the','and','for','are','but','not','you','all','can','how','why','did','tell','find','give','show','know','want','need','help','please','okay','anything','something','everything','nothing']);
+    const keywords = msg.toLowerCase().replace(/[^a-z\s]/g,' ').split(/\s+/).filter(w => w.length > 3 && !stopwords.has(w)).join(',');
+    const relevant = keywords ? searchNotes(notes, keywords, 20) : [];
 
     const payload = relevant.map(n => ({
       tab: n['_tab'] || '',
@@ -1098,24 +1109,30 @@ async function sendChat(msgOverride) {
     const res = await fetch('/.netlify/functions/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: msg, notes: payload }),
+      body: JSON.stringify({ message: msg, notes: payload, history: chatHistory.slice(-10) }),
     });
 
     const data = await res.json();
     typing.remove();
 
     const reply = data.error ? `Sorry — ${data.error}` : data.reply;
+    chatHistory.push({ role: 'assistant', content: reply });
     appendBubble(reply, 'them');
-
-    // Speak the reply out loud
     speakReply(reply);
     addHistory('Chat: ' + msg.substring(0, 50), 0);
 
   } catch (err) {
     typing.remove();
+    chatHistory.pop(); // remove the user message if it failed
     appendBubble('Could not connect. Check your internet and try again.', 'them');
     console.error(err);
   }
+}
+
+function clearChat() {
+  chatHistory = [];
+  const msgs = document.getElementById('chat-messages');
+  msgs.innerHTML = '<div class="bubble-them">Hi Mickey! Tap the mic and speak, or type below. I\'ll search your notes and read the answer back to you.</div>';
 }
 
 function appendBubble(text, who) {
