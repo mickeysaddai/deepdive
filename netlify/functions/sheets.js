@@ -10,43 +10,51 @@ export async function handler(event) {
   const headers = {
     'Access-Control-Allow-Origin': '*',
     'Content-Type': 'application/json',
-    'Cache-Control': 'public, max-age=300', // cache for 5 min
+    'Cache-Control': 'public, max-age=300',
   };
 
   try {
-    const { tab } = event.queryStringParameters || {};
-    const tabsToFetch = tab ? [tab] : TABS;
     let combined = [];
 
-    for (const tabName of tabsToFetch) {
+    for (const tabName of TABS) {
       try {
         const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(tabName)}`;
         const res = await fetch(url);
-        if (!res.ok) continue;
+        if (!res.ok) {
+          console.log(`Tab "${tabName}" returned ${res.status}`);
+          continue;
+        }
 
         const text = await res.text();
-        // Google wraps response in /*O_o*/ and google.visualization.Query.setResponse(...)
-        const jsonStr = text.replace(/^[^(]+\(/, '').replace(/\);?\s*$/, '');
-        const json = JSON.parse(jsonStr);
 
-        if (!json?.table?.rows) continue;
+        // Strip Google's JSONP wrapper: /*O_o*/\ngoogle.visualization.Query.setResponse({...});
+        const match = text.match(/google\.visualization\.Query\.setResponse\(([\s\S]*)\);?\s*$/);
+        if (!match) {
+          console.log(`Could not parse response for tab "${tabName}"`);
+          continue;
+        }
 
-        const headers_row = json.table.cols.map(c => c.label || c.id);
+        const json = JSON.parse(match[1]);
+        if (!json?.table?.rows?.length) continue;
 
-        json.table.rows.forEach(row => {
-          if (!row.c) return;
+        const cols = json.table.cols.map(c => c.label || c.id || '');
+
+        for (const row of json.table.rows) {
+          if (!row.c) continue;
           const obj = { _tab: tabName };
-          headers_row.forEach((h, i) => {
-            obj[h] = row.c[i]?.v != null ? String(row.c[i].v) : '';
+          cols.forEach((col, i) => {
+            if (col) obj[col] = row.c[i]?.v != null ? String(row.c[i].v).trim() : '';
           });
-          // Only include rows that have actual content
-          const hasContent = headers_row.some(h => h && obj[h] && obj[h].trim());
+          // Only keep rows with actual content beyond the tab name
+          const hasContent = cols.some(col => col && obj[col] && obj[col].length > 0);
           if (hasContent) combined.push(obj);
-        });
+        }
       } catch (tabErr) {
-        console.error(`Error fetching tab "${tabName}":`, tabErr.message);
+        console.error(`Error on tab "${tabName}":`, tabErr.message);
       }
     }
+
+    console.log(`Total notes fetched: ${combined.length}`);
 
     return {
       statusCode: 200,
