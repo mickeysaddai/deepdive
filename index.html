@@ -306,13 +306,16 @@ body {
   padding: 10px 14px 12px; z-index: 50;
 }
 .chat-bar-row { display: flex; align-items: center; gap: 8px; }
-.chat-bar input {
-  flex: 1; padding: 11px 16px; border-radius: 99px;
+.chat-bar textarea {
+  flex: 1; padding: 11px 16px; border-radius: 18px;
   border: none;
   background: var(--bg);
   font-size: 16px; color: var(--text); outline: none;
   font-family: 'Inter', sans-serif;
+  resize: none; max-height: 120px; overflow-y: auto;
+  line-height: 1.4;
 }
+.chat-bar textarea:focus { box-shadow: 0 0 0 2px var(--gold); }
 .chat-bar input:focus { box-shadow: 0 0 0 2px var(--gold); }
 
 /* Voice button — big and friendly */
@@ -617,8 +620,7 @@ body {
       <button class="voice-btn" id="voice-btn" onclick="toggleVoice()" aria-label="Voice input">
         <svg viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
       </button>
-      <input type="text" id="chat-input" placeholder="Or type your question…" onkeydown="if(event.key==='Enter')sendChat()" autocomplete="off">
-      <button class="send-btn" onclick="sendChat()" aria-label="Send">
+        <textarea id="chat-input" placeholder="Or type your question…" rows="1" oninput="autoGrowInput(this)" onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault();sendChat();}"></textarea>      <button class="send-btn" onclick="sendChat()" aria-label="Send">
         <svg viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
       </button>
     </div>
@@ -1221,9 +1223,8 @@ function appendSuggestions(suggestions) {
     chip.className = 'suggestion-chip';
     chip.textContent = s;
     chip.onclick = () => {
-      document.getElementById('chat-input').value = s;
-      document.getElementById('chat-input').focus();
       row.remove();
+      sendChat(s);
     };
     row.appendChild(chip);
   });
@@ -1583,7 +1584,10 @@ function applyTheme(index) {
 
   showToast(t.name);
 }
-
+function autoGrowInput(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+}
 // ── PIONEER UNITS DATA ──
 const PIONEER_UNITS = [
   { id: "1b", title: "Fortify Your Relationship With Jehovah", questions: ["How does Isaiah’s prophecy reveal the role of divine education in forging a close relationship between Jehovah and his only-begotten Son? (Isa. 50:4, 5)", "What should be our goal when engaging in personal study? (Matt. 22:37)", "What did Jehovah require of Israel’s kings, and why? (Deut. 17:18-20)", "How can we cultivate a desire for Bible reading and personal study? (1 Pet. 2:2)", "Why is self-discipline needed? (w13 9/15 p. 30, par. 13)", "Why does daily Bible reading draw you closer to God? (Josh. 1:8; 2 Chron. 15:2)", "How would you deﬁne meditation, and on what should proﬁtable meditation be focused? (Ps. 19:14; 77:12; 1 Tim. 4:13-15; it-2 p. 363)", "Why is “coming to know” God more than just an academic or intellectual study? (John 17:3; w13 10/15 p. 27, par. 7)", "How does the example of Samuel illustrate what it means to come to know Jehovah? (1 Sam. 3:7-10; w10 10/1 p. 17, pars. 1-2)", "What benefits come from investigating deep Bible truths? (Acts 4:13; Heb. 5:12-14)", "What should be our attitude about deeper Scriptural teachings? (Ps. 25:4)", "Why is dependence on “the faithful and discreet slave” so important in our grasping deeper Bible truths? (Matt.", "How can reﬂecting on creation fortify our relationship with God? (Rom. 1:20; w13 8/1 p. 11)", "What indicates that our love for Jehovah is shown not only by the intensity of our feelings but also through our actions? (1 John 2:5; 5:3)"] },
