@@ -50,7 +50,15 @@ You are warm, knowledgeable, and conversational — like a trusted study partner
 
 When Mickey's notes are provided and relevant, reference them specifically (e.g. "In your note tagged 'Trials'..." or "Your note on Isaiah 1:18 says..."). If no notes match, draw on your own knowledge of the Bible and Jehovah's Witness publications to give a helpful answer — don't just say nothing was found.
 
-Be concise but thorough. Use natural paragraph breaks. Do not use bullet points or headers unless the answer genuinely calls for a list.${notesContext ? `\n\nMickey's notes relevant to this message:\n${notesContext}` : ''}`;
+Be concise but thorough. Use natural paragraph breaks. Do not use bullet points or headers unless the answer genuinely calls for a list.${notesContext ? `\n\nMickey's notes relevant to this message:\n${notesContext}` : ''}
+
+After your main answer, on a new line, output exactly this format with three short natural follow-up questions Mickey might want to ask next, based on the conversation so far:
+[[SUGGESTIONS]]
+1. First follow-up question
+2. Second follow-up question
+3. Third follow-up question
+
+Keep each suggestion under 12 words, phrased as something Mickey would type, not as something you would ask him. Always include this block, even for short answers.`;
 
     // Build message history — exclude the current message (it's already the last in history)
     // history arrives as [{role, content}...] including the current user message at the end
@@ -68,7 +76,7 @@ Be concise but thorough. Use natural paragraph breaks. Do not use bullet points 
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
-        max_tokens: 1024,
+        max_tokens: 2048,
         system: systemPrompt,
         messages,
       }),
@@ -85,12 +93,29 @@ Be concise but thorough. Use natural paragraph breaks. Do not use bullet points 
     }
 
     const data = await response.json();
-    const reply = data.content?.[0]?.text || 'No response generated.';
+    const rawText = data.content?.[0]?.text || 'No response generated.';
+
+    // Split out the suggestions block from the main reply so the visible
+    // chat bubble and the voice readout never include it
+    const splitMarker = '[[SUGGESTIONS]]';
+    let reply = rawText;
+    let suggestions = [];
+
+    const idx = rawText.indexOf(splitMarker);
+    if (idx !== -1) {
+      reply = rawText.slice(0, idx).trim();
+      const suggestionsBlock = rawText.slice(idx + splitMarker.length);
+      suggestions = suggestionsBlock
+        .split('\n')
+        .map(line => line.replace(/^\s*\d+\.\s*/, '').trim())
+        .filter(line => line.length > 0)
+        .slice(0, 3);
+    }
 
     return {
       statusCode: 200,
       headers,
-      body: JSON.stringify({ reply }),
+      body: JSON.stringify({ reply, suggestions }),
     };
   } catch (err) {
     console.error('Chat function error:', err);
