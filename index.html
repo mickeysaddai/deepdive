@@ -690,44 +690,45 @@ async function fetchNotes() {
 
 function searchNotes(notes, keywordStr, limit = 20) {
   const terms = keywordStr.toLowerCase().split(',').map(k => k.trim()).filter(Boolean);
+  const RICH_LENGTH = 200, SUBSTANTIAL_LENGTH = 60, THIN_LENGTH = 15;
 
   const scored = [];
 
   for (const note of notes) {
-    const tag         = (note['Tag'] || '').toLowerCase();
-    const title       = (note['Note Title'] || '').toLowerCase();
-    const content     = (note['Note Content'] || '').toLowerCase();
-    const scripture   = (note['Scripture / Reference'] || '').toLowerCase();
-    const location    = (note['Location Title'] || '').toLowerCase();
-    const everything  = Object.values(note).join(' ').toLowerCase();
+    const fromTaggedTab = (note['_tab'] || '') === 'Tagged Notes';
+    const tag        = (note['Tag'] || '').toLowerCase();
+    const title      = (note['Note Title'] || '').toLowerCase();
+    const content    = (note['Note Content'] || '').toLowerCase();
+    const scripture  = (note['Scripture / Reference'] || '').toLowerCase();
+    const location   = (note['Location Title'] || '').toLowerCase();
+    const everything = Object.values(note).join(' ').toLowerCase();
 
-    let score = 0;
+    const hasTag = tag.trim().length > 0;
+    const contentLength = content.trim().length;
+    let contentQuality = 0;
+    if (contentLength >= RICH_LENGTH) contentQuality = 50;
+    else if (contentLength >= SUBSTANTIAL_LENGTH) contentQuality = 25;
+    else if (contentLength >= THIN_LENGTH) contentQuality = 8;
+
+    let score = 0, matched = false;
 
     for (const term of terms) {
       if (!term) continue;
-      // Exact tag match — highest priority
-      if (tag.includes(term))       score += 100;
-      // Note title match
-      if (title.includes(term))     score += 50;
-      // Note content match
-      if (content.includes(term))   score += 30;
-      // Scripture or location match
-      if (scripture.includes(term)) score += 10;
-      if (location.includes(term))  score += 10;
-      // Catch-all — anywhere in the row
-      if (everything.includes(term) && score === 0) score += 5;
+      if (hasTag && tag.includes(term)) { score += 70; matched = true; }
+      if (title.includes(term)) { score += 60; matched = true; }
+      if (content.includes(term)) { score += contentQuality + 20; matched = true; }
+      if (scripture.includes(term)) { score += 10; matched = true; }
+      if (location.includes(term))  { score += 10; matched = true; }
+      if (!matched && everything.includes(term)) { score += 3; matched = true; }
     }
 
+    if (!matched) continue;
+    if (fromTaggedTab) score += 8;
     if (score > 0) scored.push({ note, score });
   }
 
-  // Sort highest score first, return top results
-  return scored
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit)
-    .map(s => s.note);
+  return scored.sort((a, b) => b.score - a.score).slice(0, limit).map(s => s.note);
 }
-
 function esc(str) {
   return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
