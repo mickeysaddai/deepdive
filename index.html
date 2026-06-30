@@ -1267,12 +1267,14 @@ function setVoiceStatus(text, active) {
 }
 
 let currentAudio = null;
+let currentAudioQueue = [];
 
 async function speakReply(text, bubbleEl) {
   if (currentAudio) {
     currentAudio.pause();
     currentAudio = null;
   }
+  currentAudioQueue = [];
 
   try {
     const res = await fetch('/.netlify/functions/tts', {
@@ -1287,37 +1289,62 @@ async function speakReply(text, bubbleEl) {
     }
 
     const data = await res.json();
-    if (data.error || !data.audio) {
+    if (data.error || !data.audioChunks || !data.audioChunks.length) {
       console.error('TTS error:', data.error);
       return;
     }
 
-    currentAudio = new Audio('data:audio/mpeg;base64,' + data.audio);
-
-    currentAudio.play().catch(() => {
-      // Autoplay was blocked — show a tappable replay button on this bubble
-      if (bubbleEl) showReplayButton(bubbleEl, currentAudio);
-    });
+    currentAudioQueue = data.audioChunks.map(b64 => new Audio('data:audio/mpeg;base64,' + b64));
+    playQueue(currentAudioQueue, 0, bubbleEl);
   } catch (err) {
     console.error('speakReply error:', err);
   }
 }
 
-function showReplayButton(bubbleEl, audio) {
-  // Avoid adding a duplicate button if one already exists
-  if (bubbleEl.nextElementSibling?.classList?.contains('replay-btn')) return;
+function playQueue(queue, index, bubbleEl) {
+  if (index >= queue.length) return;
 
-  const btn = document.createElement('button');
-  btn.className = 'replay-btn';
-  btn.innerHTML = `
-    <svg viewBox="0 0 24 24"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
-    Tap to hear
-  `;
-  btn.onclick = () => {
-    audio.currentTime = 0;
-    audio.play().catch(e => console.log('Replay also blocked:', e));
+  const audio = queue[index];
+  currentAudio = audio;
+
+  audio.onended = () => playQueue(queue, index + 1, bubbleEl);
+
+  audio.play().catch(() => {
+    if (bubbleEl) showReplayButton(bubbleEl, () => playQueue(queue, index, bubbleEl));
+  });
+}
+
+function showReplayButton(bubbleEl, onReplay) {
+  const handleReplay = () => {
+    onReplay();
+    removeButtons();
   };
-  bubbleEl.insertAdjacentElement('afterend', btn);
+
+  const makeBtn = () => {
+    const btn = document.createElement('button');
+    btn.className = 'replay-btn';
+    btn.innerHTML = `
+      <svg viewBox="0 0 24 24"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+      Tap to hear
+    `;
+    btn.onclick = handleReplay;
+    return btn;
+  };
+
+  const topBtn = makeBtn();
+  const bottomBtn = makeBtn();
+
+  function removeButtons() {
+    topBtn.remove();
+    bottomBtn.remove();
+  }
+
+  if (!bubbleEl.previousElementSibling?.classList?.contains('replay-btn')) {
+    bubbleEl.insertAdjacentElement('beforebegin', topBtn);
+  }
+  if (!bubbleEl.nextElementSibling?.classList?.contains('replay-btn')) {
+    bubbleEl.insertAdjacentElement('afterend', bottomBtn);
+  }
 }
   
 // ── ADD THEME MODAL ──
