@@ -1168,12 +1168,15 @@ async function sendChat(msgOverride) {
 
     const data = await res.json();
     typing.remove();
-
+    
     const reply = data.error ? `Sorry — ${data.error}` : data.reply;
     chatHistory.push({ role: 'assistant', content: reply });
     const replyBubble = appendBubble(reply, 'them');
     speakReply(reply, replyBubble);
-    addHistory('Chat: ' + msg.substring(0, 50), 0);
+    if (data.suggestions && data.suggestions.length > 0) {
+      appendSuggestions(data.suggestions);
+}
+addHistory('Chat: ' + msg.substring(0, 50), 0);
 
   } catch (err) {
     typing.remove();
@@ -1207,6 +1210,25 @@ function appendTyping() {
   msgs.appendChild(div);
   msgs.scrollTop = msgs.scrollHeight;
   return div;
+}
+  
+function appendSuggestions(suggestions) {
+  const msgs = document.getElementById('chat-messages');
+  const row = document.createElement('div');
+  row.className = 'suggestions-row';
+  suggestions.forEach(s => {
+    const chip = document.createElement('button');
+    chip.className = 'suggestion-chip';
+    chip.textContent = s;
+    chip.onclick = () => {
+      document.getElementById('chat-input').value = s;
+      document.getElementById('chat-input').focus();
+      row.remove();
+    };
+    row.appendChild(chip);
+  });
+  msgs.appendChild(row);
+  msgs.scrollTop = msgs.scrollHeight;
 }
 
 function prefillChat(text) {
