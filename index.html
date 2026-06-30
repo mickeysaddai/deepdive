@@ -1253,8 +1253,9 @@ function setVoiceStatus(text, active) {
 
 let currentAudio = null;
 
+let currentAudio = null;
+
 async function speakReply(text) {
-  // Stop any currently playing audio first
   if (currentAudio) {
     currentAudio.pause();
     currentAudio = null;
@@ -1278,8 +1279,7 @@ async function speakReply(text) {
       return;
     }
 
-    const audioSrc = 'data:audio/mpeg;base64,' + data.audio;
-    currentAudio = new Audio(audioSrc);
+    currentAudio = new Audio('data:audio/mpeg;base64,' + data.audio);
     currentAudio.play().catch(e => console.log('Audio play blocked:', e));
   } catch (err) {
     console.error('speakReply error:', err);
