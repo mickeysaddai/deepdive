@@ -818,12 +818,12 @@ function renderHistory() {
             <p class="history-title">${esc(h.title || '')}</p>
             <p class="history-preview">${esc(subtitle)}</p>
           </div>
-          <button class="history-delete-btn" onclick="deleteHistoryItem(${i}, event)" aria-label="Delete">
-            <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          </button>
           <div class="history-chev" id="hchev-${i}">
             <svg viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
           </div>
+          <button class="history-delete-btn" onclick="deleteHistoryItem(${i}, event)" aria-label="Delete">
+            <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
         </div>
         <div class="history-body" id="hbody-${i}"></div>
       </div>`;
