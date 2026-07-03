@@ -1,15 +1,69 @@
 'use strict';
 
-// ── STATE ──
-let cachedNotes = null;
-let themes = JSON.parse(localStorage.getItem('dd-themes-v2') || '[]');
-let history = JSON.parse(localStorage.getItem('dd-history-v2') || '[]');
-let currentTheme = null;
-let isListening = false;
-let recognition = null;
-let synth = window.speechSynthesis;
-let currentAudio = null;
-let currentAudioQueue = [];
+// ── CENTRALISED STATE ──
+// All mutable state lives here. Nothing else should declare top-level lets
+// for app data — read and write exclusively through AppState so every change
+// is traceable and testable from one place.
+const AppState = {
+  // Notes data
+  notes: null,
+  notesLoadedAt: null,
+  notesError: null,
+
+  // User data (persisted)
+  themes: [],
+  history: [],
+  themeIndex: 3,
+
+  // Session state
+  currentTheme: null,
+  chatHistory: [],
+  isListening: false,
+  recognition: null,
+  currentAudio: null,
+  currentAudioQueue: [],
+  detailAllMatches: [],
+  detailPage: 0,
+  explorePage: 0,
+  currentExploreUnit: null,
+
+  // Single setter — all state changes go through here
+  set(key, value) {
+    this[key] = value;
+    return this;
+  },
+
+  // Persist a key to localStorage
+  save(key) {
+    const map = {
+      themes:     'dd-themes-v2',
+      history:    'dd-history-v2',
+      themeIndex: 'dd-theme',
+    };
+    if (map[key]) {
+      try {
+        localStorage.setItem(map[key], JSON.stringify(this[key]));
+      } catch(e) {
+        console.warn('Could not persist state:', key, e);
+      }
+    }
+  },
+
+  // Hydrate from localStorage on boot
+  load() {
+    try { this.themes  = JSON.parse(localStorage.getItem('dd-themes-v2')  || '[]'); } catch(e) { this.themes  = []; }
+    try { this.history = JSON.parse(localStorage.getItem('dd-history-v2') || '[]'); } catch(e) { this.history = []; }
+    try { this.themeIndex = parseInt(localStorage.getItem('dd-theme') || '3'); } catch(e) { this.themeIndex = 3; }
+  },
+};
+
+// Boot — hydrate persisted state immediately
+AppState.load();
+
+// Legacy shims so existing functions that reference bare variables still work
+// during the transition. These are thin proxies into AppState and can be
+// removed once every call-site is migrated.
+const synth = window.speechSynthesis;
 
 // ── NAVIGATION ──
 const ALL = ['home','themes','detail','pioneer','pioneer-detail','pioneer-questions','pioneer-answer','chat','history'];
@@ -42,14 +96,16 @@ function showToast(msg) {
 
 // ── FETCH NOTES ──
 async function fetchNotes() {
-  if (cachedNotes) return cachedNotes;
+  if (AppState.notes) return AppState.notes;
   const res = await fetch('/.netlify/functions/sheets');
   if (!res.ok) throw new Error(`Sheets error: ${res.status}`);
   const data = await res.json();
   if (data.error) throw new Error(data.error);
-  cachedNotes = data.notes || [];
+  AppState.set('notes', data.notes || []);
+  AppState.set('notesLoadedAt', Date.now());
+  AppState.set('notesError', null);
   console.log(`Loaded ${cachedNotes.length} notes`);
-  return cachedNotes;
+  return AppState.notes;
 }
 
 // ── SEARCH ──
@@ -97,25 +153,25 @@ function renderThemes() {
   const query = (document.getElementById('theme-search')?.value || '').toLowerCase();
   const list = document.getElementById('themes-list');
 
-  if (themes.length === 0 && !query) {
+  if (AppState.themes.length === 0 && !query) {
     list.innerHTML = `
       <div class="empty-themes">
         <div class="big-icon">🌊</div>
-        <h3>No themes yet</h3>
-        <p>Create your first theme and Deep Dive will search your notes for everything related to it.</p>
+        <h3>No study notes yet</h3>
+        <p>Create your first study note topic and Deep Dive will search your notes for everything related to it.</p>
         <button onclick="openModal()">
           <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-          Add your first theme
+          Add your first study note
         </button>
       </div>`;
     return;
   }
 
-  const sorted = [...themes].reverse();
+  const sorted = [...AppState.themes].reverse();
   const filtered = sorted.filter(t => t.name.toLowerCase().includes(query));
 
   list.innerHTML = filtered.map((t) => {
-    const originalIndex = themes.indexOf(t);
+    const originalIndex = AppState.themes.indexOf(t);
     return `
       <div class="theme-row" onclick="openTheme(${originalIndex})">
         <span class="theme-name">${esc(t.name)}</span>
@@ -124,28 +180,27 @@ function renderThemes() {
   }).join('') + `
     <div class="add-row" onclick="openModal()">
       <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-      Add new theme
+      Add new study note
     </div>`;
 }
 
 // ── THEME DETAIL ──
 const PAGE_SIZE = 10;
-let detailAllMatches = [];
-let detailPage = 0;
+
 
 async function openTheme(index) {
-  const theme = themes[index];
-  currentTheme = theme;
+  const theme = AppState.themes[index];
+  AppState.set('currentTheme', theme);
   detailPage = 0;
-  detailAllMatches = [];
+  AppState.set('detailAllMatches', []);
   document.getElementById('detail-title').textContent = theme.name;
   document.getElementById('detail-content').innerHTML = `<div class="loading-state"><div class="spinner"></div>Searching your notes for "${esc(theme.name)}"…</div>`;
   goTo('detail');
 
   try {
     const notes = await fetchNotes();
-    detailAllMatches = searchNotes(notes, theme.keywords || theme.name);
-    renderDetail(theme, detailAllMatches, 0);
+    AppState.set('detailAllMatches', searchNotes(notes, theme.keywords || theme.name));
+    renderDetail(theme, AppState.detailAllMatches, 0);
     addHistory({ type: 'theme', title: theme.name, count: detailAllMatches.length, payload: { name: theme.name, keywords: theme.keywords || theme.name } });
   } catch (err) {
     console.error(err);
@@ -154,7 +209,7 @@ async function openTheme(index) {
 }
 
 function renderDetail(theme, allMatches, page) {
-  detailPage = page;
+  AppState.set('detailPage', page);
   const el = document.getElementById('detail-content');
   const total = allMatches.length;
   const totalPages = Math.ceil(total / PAGE_SIZE);
@@ -213,11 +268,11 @@ function renderDetail(theme, allMatches, page) {
   const paginationBar = totalPages > 1 ? `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-top:16px;gap:8px">
       <button class="note-action" style="flex:1;justify-content:center;padding:10px"
-        onclick="renderDetail(currentTheme, detailAllMatches, ${page - 1}); window.scrollTo(0,0)"
+        onclick="renderDetail(AppState.currentTheme, AppState.detailAllMatches, ${page - 1}); window.scrollTo(0,0)"
         ${page === 0 ? 'disabled style="flex:1;justify-content:center;padding:10px;opacity:0.35;cursor:default"' : ''}>← Prev</button>
       <span style="font-size:12px;color:var(--text3);white-space:nowrap">Page ${page + 1} of ${totalPages}</span>
       <button class="note-action" style="flex:1;justify-content:center;padding:10px"
-        onclick="renderDetail(currentTheme, detailAllMatches, ${page + 1}); window.scrollTo(0,0)"
+        onclick="renderDetail(AppState.currentTheme, AppState.detailAllMatches, ${page + 1}); window.scrollTo(0,0)"
         ${page >= totalPages - 1 ? 'disabled style="flex:1;justify-content:center;padding:10px;opacity:0.35;cursor:default"' : ''}>Next →</button>
     </div>` : '';
 
@@ -262,11 +317,10 @@ function switchPioneerTab(tab) {
   }
 }
 
-let explorePage = 0;
 const EXPLORE_PAGE_SIZE = 12;
 
 function renderExploreUnits(page = 0) {
-  explorePage = page;
+  AppState.set('explorePage', page);
   const el = document.getElementById('explore-units-list');
   const total = PIONEER_UNITS.length;
   const totalPages = Math.ceil(total / EXPLORE_PAGE_SIZE);
@@ -297,11 +351,11 @@ function renderExploreUnits(page = 0) {
 let currentExploreUnit = null;
 
 function openExploreUnit(i) {
-  currentExploreUnit = PIONEER_UNITS[i];
-  document.getElementById('questions-title').textContent = currentExploreUnit.title;
+  AppState.set('currentExploreUnit', PIONEER_UNITS[i]);
+  document.getElementById('questions-title').textContent = AppState.currentExploreUnit.title;
   const el = document.getElementById('questions-content');
   el.innerHTML = `<p style="font-size:13px;color:var(--text3);margin-bottom:16px;line-height:1.5">Tap a question — Deep Dive will search your notes for the answer.</p>` +
-    currentExploreUnit.questions.map((q, qi) => `
+    AppState.currentExploreUnit.questions.map((q, qi) => `
       <div class="unit-card" onclick="openQuestionAnswer(${i}, ${qi})" style="display:flex;align-items:flex-start;gap:10px">
         <span style="font-size:11px;font-weight:700;color:var(--gold);margin-top:2px;flex-shrink:0">Q${qi+1}</span>
         <span style="font-size:14px;line-height:1.5;color:var(--text)">${esc(q)}</span>
@@ -450,7 +504,7 @@ async function openUnit(i) {
 }
 
 // ── CHAT ──
-let chatHistory = [];
+
 
 async function sendChat(msgOverride) {
   const input = document.getElementById('chat-input');
@@ -460,7 +514,7 @@ async function sendChat(msgOverride) {
   input.style.height = 'auto';
 
   appendBubble(msg, 'me');
-  chatHistory.push({ role: 'user', content: msg });
+  AppState.chatHistory.push({ role: 'user', content: msg });
   const typing = appendTyping();
 
   try {
@@ -478,14 +532,14 @@ async function sendChat(msgOverride) {
     const res = await fetch('/.netlify/functions/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: msg, notes: payload, history: chatHistory.slice(-10) }),
+      body: JSON.stringify({ message: msg, notes: payload, history: AppState.chatHistory.slice(-10) }),
     });
 
     const data = await res.json();
     typing.remove();
 
     const reply = data.error ? `Sorry — ${data.error}` : data.reply;
-    chatHistory.push({ role: 'assistant', content: reply });
+    AppState.chatHistory.push({ role: 'assistant', content: reply });
     const replyBubble = appendBubble(reply, 'them');
     speakReply(reply, replyBubble);
     if (data.suggestions && data.suggestions.length > 0) appendSuggestions(data.suggestions);
@@ -493,15 +547,16 @@ async function sendChat(msgOverride) {
 
   } catch (err) {
     typing.remove();
-    chatHistory.pop();
+    AppState.chatHistory.pop();
     appendBubble('Could not connect. Check your internet and try again.', 'them');
     console.error(err);
   }
 }
 
 function clearChat() {
-  chatHistory = [];
-  cachedNotes = null;
+  AppState.set('chatHistory', []);
+  AppState.set('notes', null);
+  AppState.set('notesLoadedAt', null);
   const msgs = document.getElementById('chat-messages');
   msgs.innerHTML = '<div class="bubble-them">Hi Mickey! Tap the mic and speak, or type below. I\'ll search your notes and read the answer back to you.</div>';
 }
@@ -555,36 +610,36 @@ function autoGrowInput(el) {
 function toggleVoice() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) { showToast('Voice not supported — try Chrome'); return; }
-  if (isListening) { stopListening(); return; }
+  if (AppState.isListening) { stopListening(); return; }
 
   synth.cancel();
-  recognition = new SR();
-  recognition.continuous = false;
-  recognition.interimResults = true;
-  recognition.lang = 'en-US';
+  AppState.set('recognition', new SR());
+  AppState.recognition.continuous = false;
+  AppState.recognition.interimResults = true;
+  AppState.recognition.lang = 'en-US';
 
-  recognition.onstart = () => {
-    isListening = true;
+  AppState.recognition.onstart = () => {
+    AppState.set('isListening', true);
     document.getElementById('voice-btn').classList.add('listening');
     setVoiceStatus('Listening…', true);
   };
 
-  recognition.onresult = (e) => {
+  AppState.recognition.onresult = (e) => {
     const transcript = Array.from(e.results).map(r => r[0].transcript).join('');
     document.getElementById('chat-input').value = transcript;
     if (e.results[0].isFinal) setVoiceStatus('Got it — searching…', true);
   };
 
-  recognition.onend = () => {
-    isListening = false;
+  AppState.recognition.onend = () => {
+    AppState.set('isListening', false);
     document.getElementById('voice-btn').classList.remove('listening');
     setVoiceStatus('Tap the mic to speak', false);
     const msg = document.getElementById('chat-input').value.trim();
     if (msg) sendChat(msg);
   };
 
-  recognition.onerror = (e) => {
-    isListening = false;
+  AppState.recognition.onerror = (e) => {
+    AppState.set('isListening', false);
     document.getElementById('voice-btn').classList.remove('listening');
     setVoiceStatus('Tap the mic to speak', false);
     if (e.error === 'aborted') return;
@@ -595,12 +650,12 @@ function toggleVoice() {
     else showToast('Voice error: ' + e.error);
   };
 
-  recognition.start();
+  AppState.recognition.start();
 }
 
 function stopListening() {
-  recognition?.stop();
-  isListening = false;
+  AppState.recognition?.stop();
+  AppState.set('isListening', false);
   document.getElementById('voice-btn').classList.remove('listening');
   setVoiceStatus('Tap the mic to speak', false);
 }
@@ -613,8 +668,8 @@ function setVoiceStatus(text, active) {
 
 // ── TTS ──
 async function speakReply(text, bubbleEl) {
-  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
-  currentAudioQueue = [];
+  if (AppState.currentAudio) { AppState.currentAudio.pause(); AppState.set('currentAudio', null); }
+  AppState.set('currentAudioQueue', []);
 
   try {
     const res = await fetch('/.netlify/functions/tts', {
@@ -627,8 +682,8 @@ async function speakReply(text, bubbleEl) {
     const data = await res.json();
     if (data.error || !data.audioChunks || !data.audioChunks.length) { console.error('TTS error:', data.error); return; }
 
-    currentAudioQueue = data.audioChunks.map(b64 => new Audio('data:audio/mpeg;base64,' + b64));
-    playQueue(currentAudioQueue, 0, bubbleEl);
+    AppState.set('currentAudioQueue', data.audioChunks.map(b64 => new Audio('data:audio/mpeg;base64,' + b64)));
+    playQueue(AppState.currentAudioQueue, 0, bubbleEl);
   } catch (err) {
     console.error('speakReply error:', err);
   }
@@ -637,7 +692,7 @@ async function speakReply(text, bubbleEl) {
 function playQueue(queue, index, bubbleEl) {
   if (index >= queue.length) return;
   const audio = queue[index];
-  currentAudio = audio;
+  AppState.set('currentAudio', audio);
   audio.onended = () => playQueue(queue, index + 1, bubbleEl);
   audio.play().catch(() => {
     if (bubbleEl) showReplayButton(bubbleEl, () => playQueue(queue, index, bubbleEl));
@@ -672,29 +727,29 @@ function saveTheme() {
   const name = document.getElementById('new-name').value.trim();
   if (!name) { document.getElementById('new-name').focus(); return; }
   const keywords = document.getElementById('new-keywords').value.trim() || name;
-  themes.push({ name, keywords });
-  localStorage.setItem('dd-themes-v2', JSON.stringify(themes));
+  AppState.themes.push({ name, keywords });
+  AppState.save('themes');
   document.getElementById('new-name').value = '';
   document.getElementById('new-keywords').value = '';
   closeModal();
   showToast(`"${name}" saved`);
-  openTheme(themes.length - 1);
+  openTheme(AppState.themes.length - 1);
 }
 
 // ── HISTORY ──
 function addHistory(entry) {
   if (typeof entry === 'string') entry = { type: 'chat', title: entry, count: 0, payload: {} };
   entry.date = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-  history.unshift(entry);
-  history = history.slice(0, 100);
-  localStorage.setItem('dd-history-v2', JSON.stringify(history));
+  AppState.history.unshift(entry);
+  AppState.history = AppState.history.slice(0, 100);
+  AppState.save('history');
 }
 
 function clearHistory() {
-  if (!history.length) { showToast('Nothing to clear'); return; }
+  if (!AppState.history.length) { showToast('Nothing to clear'); return; }
   if (!confirm('Clear all history? This cannot be undone.')) return;
   history = [];
-  localStorage.setItem('dd-history-v2', JSON.stringify(history));
+  AppState.save('history');
   renderHistory();
   showToast('History cleared');
 }
@@ -702,7 +757,7 @@ function clearHistory() {
 function deleteHistoryItem(index, e) {
   e.stopPropagation();
   history.splice(index, 1);
-  localStorage.setItem('dd-history-v2', JSON.stringify(history));
+  AppState.save('history');
   renderHistory();
 }
 
@@ -719,7 +774,7 @@ function toggleHistoryItem(i) {
 }
 
 async function loadHistoryContent(i, body) {
-  const h = history[i];
+  const h = AppState.history[i];
   if (!h || !h.payload) return;
 
   if (h.type === 'theme') {
@@ -774,17 +829,17 @@ function toggleHistoryNote(bodyId, chevId) {
 }
 
 function openThemeByName(name, keywords) {
-  const idx = themes.findIndex(t => t.name === name);
+  const idx = AppState.themes.findIndex(t => t.name === name);
   if (idx !== -1) {
     openTheme(idx);
   } else {
-    currentTheme = { name, keywords };
+    AppState.set('currentTheme', { name, keywords });
     document.getElementById('detail-title').textContent = name;
     document.getElementById('detail-content').innerHTML = `<div class="loading-state"><div class="spinner"></div>Searching…</div>`;
     goTo('detail');
     fetchNotes().then(notes => {
       detailAllMatches = searchNotes(notes, keywords || name);
-      renderDetail(currentTheme, detailAllMatches, 0);
+      renderDetail(AppState.currentTheme, AppState.detailAllMatches, 0);
     });
   }
 }
@@ -796,18 +851,18 @@ function reaskChat(msg) {
 
 function renderHistory() {
   const el = document.getElementById('history-content');
-  if (!history.length) {
+  if (!AppState.history.length) {
     el.innerHTML = '<div class="empty-state"><p>Your sessions will appear here as you explore themes and chat.</p></div>';
     return;
   }
 
-  el.innerHTML = history.map((h, i) => {
+  el.innerHTML = AppState.history.map((h, i) => {
     const isTheme = h.type === 'theme';
     const iconStyle = isTheme ? 'background:#E8F5EE;color:#0F6E56' : 'background:#FDF3E3;color:#854F0B';
     const iconSvg = isTheme
       ? `<svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>`
       : `<svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`;
-    const subtitle = isTheme ? `Theme search${h.count ? ' · ' + h.count + ' notes' : ''}` : 'Chat';
+    const subtitle = isTheme ? `Study notes search${h.count ? ' · ' + h.count + ' notes' : ''}` : 'Chat';
 
     return `
       <div class="history-item">
@@ -818,12 +873,12 @@ function renderHistory() {
             <p class="history-title">${esc(h.title || '')}</p>
             <p class="history-preview">${esc(subtitle)}</p>
           </div>
-          <div class="history-chev" id="hchev-${i}">
-            <svg viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
-          </div>
           <button class="history-delete-btn" onclick="deleteHistoryItem(${i}, event)" aria-label="Delete">
             <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
+          <div class="history-chev" id="hchev-${i}">
+            <svg viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+          </div>
         </div>
         <div class="history-body" id="hbody-${i}"></div>
       </div>`;
@@ -832,9 +887,9 @@ function renderHistory() {
 
 // ── EXPORT ──
 function exportTheme() {
-  if (!currentTheme) return;
+  if (!AppState.currentTheme) return;
   const cards = document.querySelectorAll('#detail-content .note-card');
-  let text = `Deep Dive Export\nTheme: ${currentTheme.name}\nDate: ${new Date().toLocaleDateString()}\n${'─'.repeat(50)}\n\n`;
+  let text = `Deep Dive Export\nTheme: ${AppState.currentTheme.name}\nDate: ${new Date().toLocaleDateString()}\n${'─'.repeat(50)}\n\n`;
   cards.forEach((card, i) => {
     const tag     = card.querySelector('.note-tag-pill')?.textContent?.trim() || '';
     const summary = card.querySelector('.note-summary')?.textContent?.trim() || '';
@@ -845,7 +900,7 @@ function exportTheme() {
   const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `deepdive-${currentTheme.name.replace(/\s+/g,'-').toLowerCase()}.txt`;
+  a.download = `deepdive-${AppState.currentTheme.name.replace(/\s+/g,'-').toLowerCase()}.txt`;
   a.click();
   showToast('Exported');
 }
@@ -858,12 +913,12 @@ const THEMES = [
   { name: 'Morning Light', navy: '#2C3E50', navyMid: '#384F62', navySoft: '#446074', accent: '#6B8CAE', accentDim: 'rgba(107,140,174,0.15)', accentLight: '#EAF0F6', bg: '#F8F6F2', surface: '#FFFFFF', surface2: '#F0EDE8', surface3: '#E8E4DE', text: '#1A1A18', text2: '#4A4A46', text3: '#8A8A84', border: 'rgba(26,26,24,0.08)', borderStrong: 'rgba(26,26,24,0.14)', iconColors: [{ bg: '#E8EFF5', fg: '#2C4A62' },{ bg: '#E8F0EC', fg: '#1E4030' },{ bg: '#F5EDE8', fg: '#5A3820' },{ bg: '#F0EAF0', fg: '#3A2840' }] },
 ];
 
-let currentThemeIndex = parseInt(localStorage.getItem('dd-theme') || '3');
+
 
 function applyTheme(index) {
   const t = THEMES[index];
-  currentThemeIndex = index;
-  localStorage.setItem('dd-theme', index);
+  AppState.set('themeIndex', index);
+  AppState.save('themeIndex');
   const r = document.documentElement.style;
   r.setProperty('--navy', t.navy);
   r.setProperty('--navy-mid', t.navyMid);
@@ -926,6 +981,6 @@ const PIONEER_UNITS = [
 ];
 
 // ── INIT ──
-applyTheme(currentThemeIndex);
+applyTheme(AppState.themeIndex);
 renderThemes();
 if (synth) synth.getVoices();
