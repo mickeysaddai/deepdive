@@ -156,6 +156,10 @@ async function fetchNotesFromNetwork() {
       console.log(`Validation: ${data.validation.rowsPassed} passed, ${data.validation.rowsDropped} dropped`);
     }
 
+    // Kick off background embedding so semantic search stays fresh
+    // This is fire-and-forget — never blocks the UI
+    embedNotesInBackground(notes);
+
     // Persist to localStorage as stale fallback
     try {
       localStorage.setItem(NOTES_CACHE_KEY, JSON.stringify({
@@ -238,43 +242,199 @@ function showStaleDataBanner() {
 }
 
 // ── SEARCH ──
+
+// Build a stable note ID matching the one used in embed.js
+function noteId(note) {
+  const key = [
+    note['_tab'] || '',
+    note['Tag'] || '',
+    note['Scripture / Reference'] || '',
+    note['Note Title'] || '',
+  ].join('|');
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) {
+    hash = ((hash << 5) - hash) + key.charCodeAt(i);
+    hash |= 0;
+  }
+  return `note_${Math.abs(hash)}_${key.length}`;
+}
+
+// Pure keyword search — fast, synchronous, always runs
+function keywordScore(note, terms) {
+  const fromTaggedTab = (note['_tab'] || '') === 'Tagged Notes';
+  const tag        = (note['Tag'] || '').toLowerCase();
+  const title      = (note['Note Title'] || '').toLowerCase();
+  const content    = (note['Note Content'] || '').toLowerCase();
+  const scripture  = (note['Scripture / Reference'] || '').toLowerCase();
+  const location   = (note['Location Title'] || '').toLowerCase();
+
+  // Use pre-computed _searchText if available (set by sheets.js data integrity layer)
+  const everything = note['_searchText'] || Object.values(note).join(' ').toLowerCase();
+
+  const hasTag = tag.trim().length > 0;
+  const contentLength = content.trim().length;
+
+  // Use pre-computed _quality if available
+  let contentQuality = 0;
+  const q = note['_quality'];
+  if      (q === 'rich')        contentQuality = 50;
+  else if (q === 'substantial') contentQuality = 25;
+  else if (q === 'thin')        contentQuality = 8;
+  else if (contentLength >= 200) contentQuality = 50;
+  else if (contentLength >= 60)  contentQuality = 25;
+  else if (contentLength >= 15)  contentQuality = 8;
+
+  let score = 0, matched = false;
+  for (const term of terms) {
+    if (!term) continue;
+    if (hasTag && tag.includes(term))     { score += 70; matched = true; }
+    if (title.includes(term))             { score += 60; matched = true; }
+    if (content.includes(term))           { score += contentQuality + 20; matched = true; }
+    if (scripture.includes(term))         { score += 10; matched = true; }
+    if (location.includes(term))          { score += 10; matched = true; }
+    if (!matched && everything.includes(term)) { score += 3; matched = true; }
+  }
+  if (!matched) return 0;
+  if (fromTaggedTab) score += 8;
+  return score;
+}
+
+// Synchronous keyword-only search — used as immediate results while semantic runs
 function searchNotes(notes, keywordStr, limit = 20) {
   const terms = keywordStr.toLowerCase().split(',').map(k => k.trim()).filter(Boolean);
-  const RICH_LENGTH = 200, SUBSTANTIAL_LENGTH = 60, THIN_LENGTH = 15;
+  if (!terms.length) return [];
+
   const scored = [];
-
   for (const note of notes) {
-    const fromTaggedTab = (note['_tab'] || '') === 'Tagged Notes';
-    const tag        = (note['Tag'] || '').toLowerCase();
-    const title      = (note['Note Title'] || '').toLowerCase();
-    const content    = (note['Note Content'] || '').toLowerCase();
-    const scripture  = (note['Scripture / Reference'] || '').toLowerCase();
-    const location   = (note['Location Title'] || '').toLowerCase();
-    const everything = Object.values(note).join(' ').toLowerCase();
-
-    const hasTag = tag.trim().length > 0;
-    const contentLength = content.trim().length;
-    let contentQuality = 0;
-    if (contentLength >= RICH_LENGTH) contentQuality = 50;
-    else if (contentLength >= SUBSTANTIAL_LENGTH) contentQuality = 25;
-    else if (contentLength >= THIN_LENGTH) contentQuality = 8;
-
-    let score = 0, matched = false;
-    for (const term of terms) {
-      if (!term) continue;
-      if (hasTag && tag.includes(term)) { score += 70; matched = true; }
-      if (title.includes(term)) { score += 60; matched = true; }
-      if (content.includes(term)) { score += contentQuality + 20; matched = true; }
-      if (scripture.includes(term)) { score += 10; matched = true; }
-      if (location.includes(term))  { score += 10; matched = true; }
-      if (!matched && everything.includes(term)) { score += 3; matched = true; }
-    }
-    if (!matched) continue;
-    if (fromTaggedTab) score += 8;
+    const score = keywordScore(note, terms);
     if (score > 0) scored.push({ note, score });
   }
-
   return scored.sort((a, b) => b.score - a.score).slice(0, limit).map(s => s.note);
+}
+
+// Async semantic search — blends keyword scores with OpenAI semantic similarity.
+// Returns enhanced results if embeddings are available, falls back to keyword-only
+// silently if the embed function is unavailable or slow.
+async function searchNotesSemantic(notes, queryStr, limit = 20) {
+  const terms = queryStr.toLowerCase().split(',').map(k => k.trim()).filter(Boolean);
+  if (!terms.length) return [];
+
+  // Build keyword score map first (always runs, fast)
+  const keywordMap = new Map();
+  for (const note of notes) {
+    const score = keywordScore(note, terms);
+    if (score > 0) keywordMap.set(noteId(note), { note, score });
+  }
+
+  // Attempt semantic search with a 4-second timeout so slow network
+  // never blocks the user — falls back to keyword results
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 4000);
+
+    const res = await fetch('/.netlify/functions/embed', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'semantic-search', query: queryStr }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    if (!res.ok) throw new Error(`Embed function returned ${res.status}`);
+    const data = await res.json();
+    const semanticMatches = data.matches || [];
+
+    if (!semanticMatches.length) {
+      // No semantic results — return keyword results
+      return Array.from(keywordMap.values())
+        .sort((a, b) => b.score - a.score)
+        .slice(0, limit)
+        .map(s => s.note);
+    }
+
+    // Build a note lookup by noteId for semantic matching
+    const noteLookup = new Map();
+    for (const note of notes) {
+      noteLookup.set(noteId(note), note);
+    }
+
+    // Blend scores:
+    // - Keyword score (0–200+) normalized to 0–100
+    // - Semantic similarity (0–1) scaled to 0–80
+    // Keyword still dominates for exact tag/title matches,
+    // but semantic pulls in related notes that keyword misses entirely
+    const maxKeyword = Math.max(...Array.from(keywordMap.values()).map(v => v.score), 1);
+    const blended = new Map();
+
+    // Add keyword-scored notes
+    for (const [id, { note, score }] of keywordMap) {
+      const normalizedKeyword = (score / maxKeyword) * 100;
+      blended.set(id, { note, score: normalizedKeyword, source: 'keyword' });
+    }
+
+    // Blend in semantic matches
+    for (const match of semanticMatches) {
+      const note = noteLookup.get(match.note_id);
+      if (!note) continue;
+
+      const semanticScore = match.similarity * 80;
+      const existing = blended.get(match.note_id);
+
+      if (existing) {
+        // Note found by both — combine scores, keyword gets priority
+        blended.set(match.note_id, {
+          note,
+          score: existing.score + semanticScore * 0.5,
+          source: 'both',
+        });
+      } else {
+        // Semantic-only match — surfaces related notes keyword missed
+        blended.set(match.note_id, {
+          note,
+          score: semanticScore,
+          source: 'semantic',
+        });
+      }
+    }
+
+    const results = Array.from(blended.values())
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
+      .map(s => s.note);
+
+    console.log(`Search "${queryStr}": ${results.length} results (keyword: ${keywordMap.size}, semantic: ${semanticMatches.length})`);
+    return results;
+
+  } catch (err) {
+    // Semantic failed — fall back to keyword silently
+    if (err.name !== 'AbortError') {
+      console.warn('Semantic search failed, using keyword fallback:', err.message);
+    } else {
+      console.warn('Semantic search timed out, using keyword fallback');
+    }
+    return Array.from(keywordMap.values())
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
+      .map(s => s.note);
+  }
+}
+
+// Background embedding — called after notes are fetched to keep vectors fresh.
+// Runs silently, never blocks the UI.
+async function embedNotesInBackground(notes) {
+  try {
+    const res = await fetch('/.netlify/functions/embed', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'embed-notes', notes }),
+    });
+    const data = await res.json();
+    if (data.embedded > 0) {
+      console.log(`Background embedding complete: ${data.embedded} new, ${data.skipped} unchanged`);
+    }
+  } catch (err) {
+    console.warn('Background embedding failed silently:', err.message);
+  }
 }
 
 // ── THEMES LIST ──
@@ -328,9 +488,9 @@ async function openTheme(index) {
 
   try {
     const notes = await fetchNotes();
-    AppState.set('detailAllMatches', searchNotes(notes, theme.keywords || theme.name));
+    AppState.set('detailAllMatches', await searchNotesSemantic(notes, theme.keywords || theme.name));
     renderDetail(theme, AppState.detailAllMatches, 0);
-    addHistory({ type: 'theme', title: theme.name, count: detailAllMatches.length, payload: { name: theme.name, keywords: theme.keywords || theme.name } });
+    addHistory({ type: 'theme', title: theme.name, count: AppState.detailAllMatches.length, payload: { name: theme.name, keywords: theme.keywords || theme.name } });
   } catch (err) {
     console.error('openTheme error:', err);
     AppState.set('notesError', err.message);
@@ -975,8 +1135,8 @@ function openThemeByName(name, keywords) {
     document.getElementById('detail-title').textContent = name;
     document.getElementById('detail-content').innerHTML = `<div class="loading-state"><div class="spinner"></div>Searching…</div>`;
     goTo('detail');
-    fetchNotes().then(notes => {
-      detailAllMatches = searchNotes(notes, keywords || name);
+    fetchNotes().then(async notes => {
+      AppState.set('detailAllMatches', await searchNotesSemantic(notes, keywords || name));
       renderDetail(AppState.currentTheme, AppState.detailAllMatches, 0);
     }).catch(err => {
       document.getElementById('detail-content').innerHTML =
