@@ -846,8 +846,8 @@ async function sendChat(msgOverride) {
   } catch (err) {
     typing.remove();
     AppState.chatHistory.pop();
-    appendBubble('Could not connect. Check your internet and try again.', 'them');
-    console.error(err);
+    appendBubble(`Error: ${err.message || 'Could not connect. Check your internet and try again.'}`, 'them');
+    console.error('sendChat error:', err);
   }
 }
 
