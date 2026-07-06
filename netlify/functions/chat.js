@@ -1,6 +1,16 @@
 const ANTHROPIC_KEY = process.env.ANTHROPIC_KEY;
 
+
+// ── OBSERVABILITY ──
+function log(event, data = {}) {
+  console.log(JSON.stringify({
+    ts: new Date().toISOString(),
+    event,
+    ...data,
+  }));
+}
 export async function handler(event) {
+  const start = Date.now();
   if (event.httpMethod === 'OPTIONS') {
     return {
       statusCode: 200,
@@ -25,6 +35,12 @@ export async function handler(event) {
   try {
     const body = JSON.parse(event.body || '{}');
     const { message, notes, history = [] } = body;
+
+    log('chat.request', {
+      msgLen: (message || '').length,
+      notesCount: (notes || []).length,
+      historyLen: (history || []).length,
+    });
 
     if (!message) {
       return { statusCode: 400, headers, body: JSON.stringify({ error: 'Message is required' }) };
@@ -112,12 +128,19 @@ Keep each suggestion under 12 words, phrased as something Mickey would type, not
         .slice(0, 3);
     }
 
+    log('chat.response', {
+      durationMs: Date.now() - start,
+      replyLen: reply.length,
+      suggestionCount: suggestions.length,
+    });
+
     return {
       statusCode: 200,
       headers,
       body: JSON.stringify({ reply, suggestions }),
     };
   } catch (err) {
+    log('chat.error', { durationMs: Date.now() - start, error: err.message });
     console.error('Chat function error:', err);
     return {
       statusCode: 500,
