@@ -95,7 +95,17 @@ function enrichRow(obj) {
   return obj;
 }
 
+
+// ── OBSERVABILITY ──
+function log(event, data = {}) {
+  console.log(JSON.stringify({
+    ts: new Date().toISOString(),
+    event,
+    ...data,
+  }));
+}
 export async function handler(event) {
+  const start = Date.now();
   if (event.httpMethod !== 'GET') {
     return { statusCode: 405, body: 'Method not allowed' };
   }
@@ -182,16 +192,16 @@ export async function handler(event) {
       }
     }
 
-    // Log validation summary to Netlify function logs
-    console.log('Sheets validation summary:', JSON.stringify({
+    log('sheets.response', {
+      durationMs: Date.now() - start,
       rowsFetched: validation.rowsFetched,
       rowsPassed:  validation.rowsPassed,
       rowsDropped: validation.rowsDropped,
       tabsFailed:  validation.tabsFailed.length,
-    }));
+    });
 
     if (validation.rowsDropped > 0) {
-      console.log('Dropped row reasons (first 20):', validation.droppedReasons);
+      log('sheets.dropped_rows', { reasons: validation.droppedReasons.slice(0, 5) });
     }
 
     return {
@@ -210,6 +220,7 @@ export async function handler(event) {
     };
 
   } catch (err) {
+    log('sheets.error', { durationMs: Date.now() - start, error: err.message });
     console.error('Sheets function error:', err);
     return {
       statusCode: 500,
