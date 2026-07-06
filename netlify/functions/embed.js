@@ -76,7 +76,17 @@ function noteEmbedText(note) {
 }
 
 // ── HANDLER ──
+
+// ── OBSERVABILITY ──
+function log(event, data = {}) {
+  console.log(JSON.stringify({
+    ts: new Date().toISOString(),
+    event,
+    ...data,
+  }));
+}
 export async function handler(event) {
+  const start = Date.now();
   if (event.httpMethod === 'OPTIONS') {
     return {
       statusCode: 200,
@@ -119,7 +129,7 @@ export async function handler(event) {
 
       // Filter to only notes that need embedding
       const toEmbed = notes.filter(n => !existingIds.has(noteId(n)));
-      console.log(`Embedding ${toEmbed.length} new notes (${existingIds.size} already stored)`);
+      log('embed.start', { toEmbed: toEmbed.length, alreadyStored: existingIds.size });
 
       if (toEmbed.length === 0) {
         return { statusCode: 200, headers, body: JSON.stringify({ embedded: 0, skipped: notes.length }) };
@@ -144,6 +154,7 @@ export async function handler(event) {
         console.log(`Embedded batch ${Math.floor(i / BATCH_SIZE) + 1}: ${embedded} total`);
       }
 
+      log('embed.complete', { durationMs: Date.now() - start, embedded, skipped: notes.length - embedded });
       return {
         statusCode: 200,
         headers,
@@ -171,6 +182,11 @@ export async function handler(event) {
         }
       );
 
+      log('embed.semantic_search', {
+        durationMs: Date.now() - start,
+        query: (query || '').substring(0, 50),
+        matchCount: (matches || []).length,
+      });
       return {
         statusCode: 200,
         headers,
@@ -181,6 +197,7 @@ export async function handler(event) {
     return { statusCode: 400, headers, body: JSON.stringify({ error: 'Unknown action' }) };
 
   } catch (err) {
+    log('embed.error', { durationMs: Date.now() - start, error: err.message });
     console.error('Embed function error:', err);
     return {
       statusCode: 500,
