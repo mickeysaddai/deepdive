@@ -95,57 +95,346 @@ function showToast(msg) {
 }
 
 // ── FETCH NOTES ──
-async function fetchNotes() {
-  if (AppState.notes) return AppState.notes;
-  const res = await fetch('/.netlify/functions/sheets');
-  if (!res.ok) throw new Error(`Sheets error: ${res.status}`);
-  const data = await res.json();
-  if (data.error) throw new Error(data.error);
-  AppState.set('notes', data.notes || []);
-  AppState.set('notesLoadedAt', Date.now());
-  AppState.set('notesError', null);
-  console.log(`Loaded ${cachedNotes.length} notes`);
-  return AppState.notes;
+// Stale-while-revalidate: serve cached notes immediately if available,
+// then silently refresh in the background if data is older than 5 minutes.
+// On failure, fall back to stale cache rather than breaking the UI.
+const NOTES_CACHE_KEY = 'dd-notes-cache-v1';
+const NOTES_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+async function fetchNotes({ forceRefresh = false } = {}) {
+  // Serve from memory cache if fresh enough
+  const age = AppState.notesLoadedAt ? Date.now() - AppState.notesLoadedAt : Infinity;
+  if (AppState.notes && !forceRefresh && age < NOTES_TTL_MS) {
+    return AppState.notes;
+  }
+
+  // If we have stale in-memory notes, return them immediately and refresh in background
+  if (AppState.notes && !forceRefresh) {
+    refreshNotes(); // fire and forget
+    return AppState.notes;
+  }
+
+  // No in-memory cache — try localStorage stale cache while we fetch
+  if (!AppState.notes) {
+    try {
+      const cached = localStorage.getItem(NOTES_CACHE_KEY);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        AppState.set('notes', parsed.notes);
+        AppState.set('notesLoadedAt', parsed.loadedAt);
+        console.log(`Loaded ${parsed.notes.length} notes from localStorage cache`);
+      }
+    } catch(e) {
+      console.warn('Could not read notes cache from localStorage:', e);
+    }
+  }
+
+  // Attempt live fetch with one automatic retry
+  return await fetchNotesFromNetwork();
+}
+
+async function fetchNotesFromNetwork() {
+  const attemptFetch = async () => {
+    const res = await fetch('/.netlify/functions/sheets');
+    if (!res.ok) throw new Error(`Sheets error: ${res.status}`);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    return data;
+  };
+
+  try {
+    // First attempt
+    const data = await attemptFetch();
+    const notes = data.notes || [];
+    AppState.set('notes', notes);
+    AppState.set('notesLoadedAt', Date.now());
+    AppState.set('notesError', null);
+    console.log(`Loaded ${notes.length} notes from network`);
+
+    // Log validation summary if available
+    if (data.validation) {
+      console.log(`Validation: ${data.validation.rowsPassed} passed, ${data.validation.rowsDropped} dropped`);
+    }
+
+    // Kick off background embedding so semantic search stays fresh
+    // This is fire-and-forget — never blocks the UI
+    embedNotesInBackground(notes);
+
+    // Persist to localStorage as stale fallback
+    try {
+      localStorage.setItem(NOTES_CACHE_KEY, JSON.stringify({
+        notes,
+        loadedAt: Date.now(),
+      }));
+    } catch(e) {
+      console.warn('Could not persist notes to localStorage:', e);
+    }
+
+    return notes;
+
+  } catch (firstErr) {
+    console.warn('First fetch attempt failed, retrying once…', firstErr.message);
+
+    // Wait 1.5s then retry once
+    await new Promise(r => setTimeout(r, 1500));
+
+    try {
+      const data = await attemptFetch();
+      const notes = data.notes || [];
+      AppState.set('notes', notes);
+      AppState.set('notesLoadedAt', Date.now());
+      AppState.set('notesError', null);
+      console.log(`Loaded ${notes.length} notes on retry`);
+      return notes;
+
+    } catch (secondErr) {
+      // Both attempts failed — use stale cache if available, else throw
+      AppState.set('notesError', secondErr.message);
+      if (AppState.notes && AppState.notes.length > 0) {
+        console.warn('Network failed twice — serving stale notes from cache');
+        showStaleDataBanner();
+        return AppState.notes;
+      }
+      throw secondErr;
+    }
+  }
+}
+
+async function refreshNotes() {
+  try {
+    const data = await (await fetch('/.netlify/functions/sheets')).json();
+    const notes = data.notes || [];
+    AppState.set('notes', notes);
+    AppState.set('notesLoadedAt', Date.now());
+    AppState.set('notesError', null);
+    try {
+      localStorage.setItem(NOTES_CACHE_KEY, JSON.stringify({ notes, loadedAt: Date.now() }));
+    } catch(e) {}
+    console.log(`Background refresh: ${notes.length} notes`);
+  } catch(e) {
+    console.warn('Background refresh failed silently:', e.message);
+  }
+}
+
+function showStaleDataBanner() {
+  // Don't show duplicate banners
+  if (document.getElementById('stale-banner')) return;
+  const banner = document.createElement('div');
+  banner.id = 'stale-banner';
+  banner.style.cssText = `
+    position: fixed; top: 0; left: 50%; transform: translateX(-50%);
+    width: 100%; max-width: 480px; z-index: 500;
+    background: #854F0B; color: white;
+    padding: 10px 16px; font-size: 12px; font-weight: 500;
+    display: flex; align-items: center; justify-content: space-between;
+    font-family: 'Inter', sans-serif;
+  `;
+  banner.innerHTML = `
+    <span>⚠️ Showing cached notes — couldn't reach Google Sheets</span>
+    <button onclick="this.parentElement.remove();fetchNotes({forceRefresh:true}).catch(()=>{})"
+      style="background:rgba(255,255,255,0.2);border:none;color:white;padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer;font-family:inherit">
+      Retry
+    </button>
+  `;
+  document.body.appendChild(banner);
+  // Auto-dismiss after 8 seconds
+  setTimeout(() => banner.remove(), 8000);
 }
 
 // ── SEARCH ──
+
+// Build a stable note ID matching the one used in embed.js
+function noteId(note) {
+  const key = [
+    note['_tab'] || '',
+    note['Tag'] || '',
+    note['Scripture / Reference'] || '',
+    note['Note Title'] || '',
+  ].join('|');
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) {
+    hash = ((hash << 5) - hash) + key.charCodeAt(i);
+    hash |= 0;
+  }
+  return `note_${Math.abs(hash)}_${key.length}`;
+}
+
+// Pure keyword search — fast, synchronous, always runs
+function keywordScore(note, terms) {
+  const fromTaggedTab = (note['_tab'] || '') === 'Tagged Notes';
+  const tag        = (note['Tag'] || '').toLowerCase();
+  const title      = (note['Note Title'] || '').toLowerCase();
+  const content    = (note['Note Content'] || '').toLowerCase();
+  const scripture  = (note['Scripture / Reference'] || '').toLowerCase();
+  const location   = (note['Location Title'] || '').toLowerCase();
+
+  // Use pre-computed _searchText if available (set by sheets.js data integrity layer)
+  const everything = note['_searchText'] || Object.values(note).join(' ').toLowerCase();
+
+  const hasTag = tag.trim().length > 0;
+  const contentLength = content.trim().length;
+
+  // Use pre-computed _quality if available
+  let contentQuality = 0;
+  const q = note['_quality'];
+  if      (q === 'rich')        contentQuality = 50;
+  else if (q === 'substantial') contentQuality = 25;
+  else if (q === 'thin')        contentQuality = 8;
+  else if (contentLength >= 200) contentQuality = 50;
+  else if (contentLength >= 60)  contentQuality = 25;
+  else if (contentLength >= 15)  contentQuality = 8;
+
+  let score = 0, matched = false;
+  for (const term of terms) {
+    if (!term) continue;
+    if (hasTag && tag.includes(term))     { score += 70; matched = true; }
+    if (title.includes(term))             { score += 60; matched = true; }
+    if (content.includes(term))           { score += contentQuality + 20; matched = true; }
+    if (scripture.includes(term))         { score += 10; matched = true; }
+    if (location.includes(term))          { score += 10; matched = true; }
+    if (!matched && everything.includes(term)) { score += 3; matched = true; }
+  }
+  if (!matched) return 0;
+  if (fromTaggedTab) score += 8;
+  return score;
+}
+
+// Synchronous keyword-only search — used as immediate results while semantic runs
 function searchNotes(notes, keywordStr, limit = 20) {
   const terms = keywordStr.toLowerCase().split(',').map(k => k.trim()).filter(Boolean);
-  const RICH_LENGTH = 200, SUBSTANTIAL_LENGTH = 60, THIN_LENGTH = 15;
+  if (!terms.length) return [];
+
   const scored = [];
-
   for (const note of notes) {
-    const fromTaggedTab = (note['_tab'] || '') === 'Tagged Notes';
-    const tag        = (note['Tag'] || '').toLowerCase();
-    const title      = (note['Note Title'] || '').toLowerCase();
-    const content    = (note['Note Content'] || '').toLowerCase();
-    const scripture  = (note['Scripture / Reference'] || '').toLowerCase();
-    const location   = (note['Location Title'] || '').toLowerCase();
-    const everything = Object.values(note).join(' ').toLowerCase();
-
-    const hasTag = tag.trim().length > 0;
-    const contentLength = content.trim().length;
-    let contentQuality = 0;
-    if (contentLength >= RICH_LENGTH) contentQuality = 50;
-    else if (contentLength >= SUBSTANTIAL_LENGTH) contentQuality = 25;
-    else if (contentLength >= THIN_LENGTH) contentQuality = 8;
-
-    let score = 0, matched = false;
-    for (const term of terms) {
-      if (!term) continue;
-      if (hasTag && tag.includes(term)) { score += 70; matched = true; }
-      if (title.includes(term)) { score += 60; matched = true; }
-      if (content.includes(term)) { score += contentQuality + 20; matched = true; }
-      if (scripture.includes(term)) { score += 10; matched = true; }
-      if (location.includes(term))  { score += 10; matched = true; }
-      if (!matched && everything.includes(term)) { score += 3; matched = true; }
-    }
-    if (!matched) continue;
-    if (fromTaggedTab) score += 8;
+    const score = keywordScore(note, terms);
     if (score > 0) scored.push({ note, score });
   }
-
   return scored.sort((a, b) => b.score - a.score).slice(0, limit).map(s => s.note);
+}
+
+// Async semantic search — blends keyword scores with OpenAI semantic similarity.
+// Returns enhanced results if embeddings are available, falls back to keyword-only
+// silently if the embed function is unavailable or slow.
+async function searchNotesSemantic(notes, queryStr, limit = 20) {
+  const terms = queryStr.toLowerCase().split(',').map(k => k.trim()).filter(Boolean);
+  if (!terms.length) return [];
+
+  // Build keyword score map first (always runs, fast)
+  const keywordMap = new Map();
+  for (const note of notes) {
+    const score = keywordScore(note, terms);
+    if (score > 0) keywordMap.set(noteId(note), { note, score });
+  }
+
+  // Attempt semantic search with a 4-second timeout so slow network
+  // never blocks the user — falls back to keyword results
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 4000);
+
+    const res = await fetch('/.netlify/functions/embed', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'semantic-search', query: queryStr }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    if (!res.ok) throw new Error(`Embed function returned ${res.status}`);
+    const data = await res.json();
+    const semanticMatches = data.matches || [];
+
+    if (!semanticMatches.length) {
+      // No semantic results — return keyword results
+      return Array.from(keywordMap.values())
+        .sort((a, b) => b.score - a.score)
+        .slice(0, limit)
+        .map(s => s.note);
+    }
+
+    // Build a note lookup by noteId for semantic matching
+    const noteLookup = new Map();
+    for (const note of notes) {
+      noteLookup.set(noteId(note), note);
+    }
+
+    // Blend scores:
+    // - Keyword score (0–200+) normalized to 0–100
+    // - Semantic similarity (0–1) scaled to 0–80
+    // Keyword still dominates for exact tag/title matches,
+    // but semantic pulls in related notes that keyword misses entirely
+    const maxKeyword = Math.max(...Array.from(keywordMap.values()).map(v => v.score), 1);
+    const blended = new Map();
+
+    // Add keyword-scored notes
+    for (const [id, { note, score }] of keywordMap) {
+      const normalizedKeyword = (score / maxKeyword) * 100;
+      blended.set(id, { note, score: normalizedKeyword, source: 'keyword' });
+    }
+
+    // Blend in semantic matches
+    for (const match of semanticMatches) {
+      const note = noteLookup.get(match.note_id);
+      if (!note) continue;
+
+      const semanticScore = match.similarity * 80;
+      const existing = blended.get(match.note_id);
+
+      if (existing) {
+        // Note found by both — combine scores, keyword gets priority
+        blended.set(match.note_id, {
+          note,
+          score: existing.score + semanticScore * 0.5,
+          source: 'both',
+        });
+      } else {
+        // Semantic-only match — surfaces related notes keyword missed
+        blended.set(match.note_id, {
+          note,
+          score: semanticScore,
+          source: 'semantic',
+        });
+      }
+    }
+
+    const results = Array.from(blended.values())
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
+      .map(s => s.note);
+
+    console.log(`Search "${queryStr}": ${results.length} results (keyword: ${keywordMap.size}, semantic: ${semanticMatches.length})`);
+    return results;
+
+  } catch (err) {
+    // Semantic failed — fall back to keyword silently
+    if (err.name !== 'AbortError') {
+      console.warn('Semantic search failed, using keyword fallback:', err.message);
+    } else {
+      console.warn('Semantic search timed out, using keyword fallback');
+    }
+    return Array.from(keywordMap.values())
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
+      .map(s => s.note);
+  }
+}
+
+// Background embedding — called after notes are fetched to keep vectors fresh.
+// Runs silently, never blocks the UI.
+async function embedNotesInBackground(notes) {
+  try {
+    const res = await fetch('/.netlify/functions/embed', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'embed-notes', notes }),
+    });
+    const data = await res.json();
+    if (data.embedded > 0) {
+      console.log(`Background embedding complete: ${data.embedded} new, ${data.skipped} unchanged`);
+    }
+  } catch (err) {
+    console.warn('Background embedding failed silently:', err.message);
+  }
 }
 
 // ── THEMES LIST ──
@@ -199,12 +488,21 @@ async function openTheme(index) {
 
   try {
     const notes = await fetchNotes();
-    AppState.set('detailAllMatches', searchNotes(notes, theme.keywords || theme.name));
+    AppState.set('detailAllMatches', await searchNotesSemantic(notes, theme.keywords || theme.name));
     renderDetail(theme, AppState.detailAllMatches, 0);
-    addHistory({ type: 'theme', title: theme.name, count: detailAllMatches.length, payload: { name: theme.name, keywords: theme.keywords || theme.name } });
+    addHistory({ type: 'theme', title: theme.name, count: AppState.detailAllMatches.length, payload: { name: theme.name, keywords: theme.keywords || theme.name } });
   } catch (err) {
-    console.error(err);
-    document.getElementById('detail-content').innerHTML = `<div class="empty-state"><p>Could not load notes.<br><br>${esc(err.message)}</p></div>`;
+    console.error('openTheme error:', err);
+    AppState.set('notesError', err.message);
+    document.getElementById('detail-content').innerHTML = `
+      <div class="empty-state">
+        <p>Could not load notes.</p>
+        <p style="font-size:12px;color:var(--text3);margin-top:8px">${esc(err.message)}</p>
+        <button class="note-action" style="margin-top:16px;padding:10px 20px"
+          onclick="openTheme(${JSON.stringify(index)})">
+          Retry
+        </button>
+      </div>`;
   }
 }
 
@@ -518,10 +816,14 @@ async function sendChat(msgOverride) {
   const typing = appendTyping();
 
   try {
+    console.log('sendChat step 1: fetching notes');
     const notes = await fetchNotes();
+    console.log('sendChat step 2: notes loaded', notes?.length);
     const stopwords = new Set(['what','that','this','with','have','from','they','their','which','when','will','were','been','your','more','some','does','about','would','could','should','than','also','into','other','there','then','these','those','such','much','many','both','where','while','make','made','even','just','like','very','well','only','most','the','and','for','are','but','not','you','all','can','how','why','did','tell','find','give','show','know','want','need','help','please','okay','anything','something','everything','nothing']);
     const keywords = msg.toLowerCase().replace(/[^a-z\s]/g,' ').split(/\s+/).filter(w => w.length > 3 && !stopwords.has(w)).join(',');
+    console.log('sendChat step 3: keywords', keywords);
     const relevant = keywords ? searchNotes(notes, keywords, 20) : [];
+    console.log('sendChat step 4: relevant notes', relevant?.length);
 
     const payload = relevant.map(n => ({
       tab: n['_tab'] || '', tag: n['Tag'] || '',
@@ -529,13 +831,16 @@ async function sendChat(msgOverride) {
       title: n['Note Title'] || '', content: n['Note Content'] || '',
     }));
 
+    console.log('sendChat step 5: calling chat function');
     const res = await fetch('/.netlify/functions/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: msg, notes: payload, history: AppState.chatHistory.slice(-10) }),
     });
 
+    console.log('sendChat step 6: chat response status', res.status);
     const data = await res.json();
+    console.log('sendChat step 7: data received', !!data.reply);
     typing.remove();
 
     const reply = data.error ? `Sorry — ${data.error}` : data.reply;
@@ -548,8 +853,10 @@ async function sendChat(msgOverride) {
   } catch (err) {
     typing.remove();
     AppState.chatHistory.pop();
-    appendBubble('Could not connect. Check your internet and try again.', 'them');
-    console.error(err);
+    appendBubble(`Error: ${err.message || 'Could not connect. Check your internet and try again.'}`, 'them');
+    console.error('sendChat error full:', err);
+    console.error('sendChat error message:', err.message);
+    console.error('sendChat error stack:', err.stack);
   }
 }
 
@@ -837,9 +1144,15 @@ function openThemeByName(name, keywords) {
     document.getElementById('detail-title').textContent = name;
     document.getElementById('detail-content').innerHTML = `<div class="loading-state"><div class="spinner"></div>Searching…</div>`;
     goTo('detail');
-    fetchNotes().then(notes => {
-      detailAllMatches = searchNotes(notes, keywords || name);
+    fetchNotes().then(async notes => {
+      AppState.set('detailAllMatches', await searchNotesSemantic(notes, keywords || name));
       renderDetail(AppState.currentTheme, AppState.detailAllMatches, 0);
+    }).catch(err => {
+      document.getElementById('detail-content').innerHTML =
+        `<div class="empty-state"><p>Could not load notes.<br><small style="color:var(--text3)">${esc(err.message)}</small></p>
+        <button class="note-action" style="margin-top:16px" onclick="fetchNotes({forceRefresh:true}).then(n=>renderDetail(AppState.currentTheme,searchNotes(n,${JSON.stringify(keywords||name)}),0))">
+          Retry
+        </button></div>`;
     });
   }
 }
