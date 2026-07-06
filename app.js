@@ -480,7 +480,7 @@ const PAGE_SIZE = 10;
 async function openTheme(index) {
   const theme = AppState.themes[index];
   AppState.set('currentTheme', theme);
-  detailPage = 0;
+  AppState.set('detailPage', 0);
   AppState.set('detailAllMatches', []);
   document.getElementById('detail-title').textContent = theme.name;
   document.getElementById('detail-content').innerHTML = `<div class="loading-state"><div class="spinner"></div>Searching your notes for "${esc(theme.name)}"…</div>`;
@@ -816,14 +816,10 @@ async function sendChat(msgOverride) {
   const typing = appendTyping();
 
   try {
-    console.log('sendChat step 1: fetching notes');
     const notes = await fetchNotes();
-    console.log('sendChat step 2: notes loaded', notes?.length);
     const stopwords = new Set(['what','that','this','with','have','from','they','their','which','when','will','were','been','your','more','some','does','about','would','could','should','than','also','into','other','there','then','these','those','such','much','many','both','where','while','make','made','even','just','like','very','well','only','most','the','and','for','are','but','not','you','all','can','how','why','did','tell','find','give','show','know','want','need','help','please','okay','anything','something','everything','nothing']);
     const keywords = msg.toLowerCase().replace(/[^a-z\s]/g,' ').split(/\s+/).filter(w => w.length > 3 && !stopwords.has(w)).join(',');
-    console.log('sendChat step 3: keywords', keywords);
     const relevant = keywords ? searchNotes(notes, keywords, 20) : [];
-    console.log('sendChat step 4: relevant notes', relevant?.length);
 
     const payload = relevant.map(n => ({
       tab: n['_tab'] || '', tag: n['Tag'] || '',
@@ -831,16 +827,13 @@ async function sendChat(msgOverride) {
       title: n['Note Title'] || '', content: n['Note Content'] || '',
     }));
 
-    console.log('sendChat step 5: calling chat function');
     const res = await fetch('/.netlify/functions/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: msg, notes: payload, history: AppState.chatHistory.slice(-10) }),
     });
 
-    console.log('sendChat step 6: chat response status', res.status);
     const data = await res.json();
-    console.log('sendChat step 7: data received', !!data.reply);
     typing.remove();
 
     const reply = data.error ? `Sorry — ${data.error}` : data.reply;
@@ -854,9 +847,7 @@ async function sendChat(msgOverride) {
     typing.remove();
     AppState.chatHistory.pop();
     appendBubble(`Error: ${err.message || 'Could not connect. Check your internet and try again.'}`, 'them');
-    console.error('sendChat error full:', err);
-    console.error('sendChat error message:', err.message);
-    console.error('sendChat error stack:', err.stack);
+    console.error('sendChat error:', err);
   }
 }
 
