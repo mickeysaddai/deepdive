@@ -625,6 +625,8 @@ const PIONEER_UNITS = [
   { id: "17b", title: "Endurance Leads to an Approved Condition", questions: ["Why did God include examples of the endurance of faithful servants of old in the Bible? (Heb. 12:1; Jas. 5:10, 11)", "What does Hebrews 5:7-9 tell us about Jesus' endurance? How do we benefit from his faithful course?", "What did Job learn through his endurance? (Job 42:2, 12; Jas. 5:10, 11)", "Why does God permit trials to come upon his servants? (Jas. 1:2-4)", "In what way do trials bring us joy?", "James says that endurance has a work that it is accomplishing. What is that work? How does endurance make us complete and sound in all respects?"] },
 ];
 
+const EXPLORE_PAGE_SIZE = 12;
+
 function switchPioneerTab(tab) {
   const xref = document.getElementById('pioneer-xref-pane');
   const explore = document.getElementById('pioneer-explore-pane');
@@ -642,8 +644,6 @@ function switchPioneerTab(tab) {
     renderExploreUnits(0);
   }
 }
-
-const EXPLORE_PAGE_SIZE = 12;
 
 function renderExploreUnits(page = 0) {
   AppState.set('explorePage', page);
