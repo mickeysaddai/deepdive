@@ -480,7 +480,7 @@ const PAGE_SIZE = 10;
 async function openTheme(index) {
   const theme = AppState.themes[index];
   AppState.set('currentTheme', theme);
-  detailPage = 0;
+  AppState.set('detailPage', 0);
   AppState.set('detailAllMatches', []);
   document.getElementById('detail-title').textContent = theme.name;
   document.getElementById('detail-content').innerHTML = `<div class="loading-state"><div class="spinner"></div>Searching your notes for "${esc(theme.name)}"…</div>`;
@@ -610,7 +610,7 @@ function switchPioneerTab(tab) {
     xref.style.display = 'none'; explore.style.display = '';
     btnE.style.background = 'var(--gold)'; btnE.style.color = 'var(--navy)';
     btnX.style.background = 'rgba(255,255,255,0.12)'; btnX.style.color = 'rgba(255,255,255,0.7)';
-    explorePage = 0;
+    AppState.set('explorePage', 0);
     renderExploreUnits(0);
   }
 }
