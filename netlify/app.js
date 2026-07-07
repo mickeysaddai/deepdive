@@ -77,7 +77,13 @@ function goTo(name) {
     if (b) b.classList.toggle('active', s === name);
   });
   if (name === 'themes') renderThemes();
-  if (name === 'pioneer') { renderPioneer(); switchPioneerTab('explore'); }
+  if (name === 'pioneer') {
+    renderPioneer();
+    // Explicitly render explore units — don't rely on switchPioneerTab
+    // since button elements may not be fully active yet
+    renderExploreUnits(0);
+    switchPioneerTab('explore');
+  }
   if (name === 'history') renderHistory();
   window.scrollTo(0, 0);
 }
