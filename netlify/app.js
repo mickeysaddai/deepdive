@@ -782,10 +782,19 @@ const UNITS = [
 ];
 
 function renderPioneer() {
+  // Cross-reference tab
   document.getElementById('units-list').innerHTML = UNITS.map((u, i) => `
     <div class="unit-card" onclick="openUnit(${i})">
       <p class="unit-number">${esc(u.number)}</p>
       <p class="unit-title">${esc(u.title)}</p>
+    </div>`).join('');
+
+  // Explore questions tab — render directly same as cross-reference
+  document.getElementById('explore-units-list').innerHTML = PIONEER_UNITS.map((u, i) => `
+    <div class="unit-card" onclick="openExploreUnit(${i})">
+      <p class="unit-number">Unit ${esc(u.id)}</p>
+      <p class="unit-title">${esc(u.title)}</p>
+      <p style="font-size:11px;color:var(--text3);margin-top:4px">${u.questions.length} question${u.questions.length !== 1 ? 's' : ''}</p>
     </div>`).join('');
 }
 
